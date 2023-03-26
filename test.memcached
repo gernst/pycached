@@ -9,4 +9,4 @@ incr n 1
 get n
 replace n 14 28 1
 X
-get n
+gets n

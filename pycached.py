@@ -1,6 +1,7 @@
 import sys
 import re
 import socket
+import threading
 
 CHARSET = "ascii"
 
@@ -57,7 +58,9 @@ class Entry:
         if value >= MAX_VALUE:
             value -= MAX_VALUE
         value = str(value)
+
         self.data = value.encode(CHARSET)
+        return value
 
     def decr(self, step):
         assert 0 <= step and step < MAX_VALUE
@@ -65,7 +68,9 @@ class Entry:
         if value < 0:
             value = 0
         value = str(value)
+
         self.data = value.encode(CHARSET)
+        return value
 
     def touched(self, exptime):
         self.exptime = exptime
@@ -96,7 +101,7 @@ class Cache:
 
     def delete(self, key):
         if key in self.entries:
-            del(self.entries[key])
+            del self.entries[key]
             return DELETED
         else:
             return NOT_FOUND
@@ -111,16 +116,14 @@ class Cache:
     def incr(self, key, step):
         if key in self.entries:
             entry = self.entries[key]
-            entry.incr(step)
-            return entry.data
+            return entry.incr(step)
         else:
             return NOT_FOUND
 
     def decr(self, key, step):
         if key in self.entries:
             entry = self.entries[key]
-            entry.decr(step)
-            return entry.data
+            return entry.decr(step)
         else:
             return NOT_FOUND
 
@@ -135,6 +138,16 @@ class Cache:
         if key in self.entries:
             self.entries[key] = entry
             return STORED
+        else:
+            return NOT_STORED
+
+    def cas(self, key, entry, unique):
+        if key in self.entries:
+            if self.entries[key].unique == unique:
+                self.entries[key] = entry
+                return STORED
+            else:
+                return EXISTS
         else:
             return NOT_STORED
 
@@ -155,12 +168,16 @@ class Cache:
             return NOT_STORED
 
 
-class Connection:
-    def __init__(self, input, output):
+class Connection(threading.Thread):
+    def __init__(self, addr, input, output, cache):
+        super().__init__()
+        self.addr = addr
         self.input = input
         self.output = output
-        self.cache = Cache()
-    
+        self.cache = cache
+
+        print("connected", self.addr)
+
     def readline(self):
         line = self.input.readline()
 
@@ -175,7 +192,7 @@ class Connection:
         data = self.input.read(length)
         assert self.input.read(1) == EOL
         return data
-    
+
     def writeline(self, *parts):
         parts = [str(part) for part in parts]
         line = " ".join(parts)
@@ -188,96 +205,113 @@ class Connection:
         self.output.write(data)
         self.output.write(EOL)
         self.output.flush()
-    
-    def readentry(self, args):
-        key, flags, exptime, length = args
+
+    def readentry(self, key, flags, exptime, length):
         data = self.readdata(int(length))
         entry = Entry(key, int(flags), int(exptime), data)
         return key, entry
-    
+
+    def writeentry(self, entry, cas):
+        if cas:
+            parts = [VALUE, entry.key, entry.flags, len(entry.data), entry.unique]
+        else:
+            parts = [VALUE, entry.key, entry.flags, len(entry.data)]
+
+        self.writeline(*parts)
+        self.writedata(entry.data)
+
     def run(self):
+        print("serving", self.addr)
+
         while True:
             line = self.readline()
 
             if line is None:
                 break
 
-            match line.split():
-                case ["get", *keys]:
-                    for entry in self.cache.get(keys):
-                        self.writeline(VALUE, entry.key, entry.flags, entry.exptime, len(entry.data))
-                        self.writedata(entry.data)
-                    self.writeline(END)
+            try:
+                self.handle(line)
+            except ClientError as e:
+                self.writeline(CLIENT_ERROR, e.message)
+        
+        print("disconnected", self.addr)
 
-                case ["gets", *keys]:
-                    for entry in self.cache.get(keys):
-                        self.writeline(VALUE, entry.key, entry.flags, entry.exptime, len(entry.data), entry.unique)
-                        self.writedata(entry.data)
-                    self.writeline(END)
-                
-                case ["gat", exptime, *keys]:
-                    exptime = int(exptime)
+    def handle(self, line):
+        match line.split():
+            case ["get", *keys]:
+                for entry in self.cache.get(keys):
+                    self.writeentry(entry, cas=False)
+                self.writeline(END)
 
-                    for entry in self.cache.gat(keys, exptime):
-                        self.writeline(VALUE, entry.key, entry.flags, entry.exptime, len(entry.data))
-                        self.writedata(entry.data)
-                    self.writeline(END)
+            case ["gets", *keys]:
+                for entry in self.cache.get(keys):
+                    self.writeentry(entry, cas=True)
+                self.writeline(END)
 
-                case ["gats", exptime, *keys]:
-                    exptime = int(exptime)
+            case ["gat", exptime, *keys]:
+                for entry in self.cache.gat(keys, int(exptime)):
+                    self.writeentry(entry, cas=False)
+                self.writeline(END)
 
-                    for entry in self.cache.gat(keys, exptime):
-                        self.writeline(VALUE, entry.key, entry.flags, entry.exptime, len(entry.data), entry.unique)
-                        self.writedata(entry.data)
-                    self.writeline(END)
+            case ["gats", exptime, *keys]:
+                for entry in self.cache.gat(keys, int(exptime)):
+                    self.writeentry(entry, cas=True)
+                self.writeline(END)
 
-                case ["set", *args]:
-                    key, entry = self.readentry(args)
-                    result = self.cache.set(key, entry)
-                    self.writeline(result)
+            case ["set", key, flags, exptime, length]:
+                key, entry = self.readentry(key, flags, exptime, length)
+                result = self.cache.set(key, entry)
+                self.writeline(result)
 
-                case ["delete", key]:
-                    result = self.cache.delete(key)
-                    self.writeline(result)
+            case ["cas", key, flags, exptime, length, unique]:
+                key, entry = self.readentry(key, flags, exptime, length)
+                result = self.cache.cas(key, entry, int(unique))
+                self.writeline(result)
 
-                case ["incr", key, step]:
-                    step = int(step)
-                    result = self.cache.incr(key, step)
-                    self.writedata(result)
+            case ["delete", key]:
+                result = self.cache.delete(key)
+                self.writeline(result)
 
-                case ["decr", key, step]:
-                    step = int(step)
-                    result = self.cache.decr(key, step)
-                    self.writedata(result)
+            case ["incr", key, step]:
+                step = int(step)
+                result = self.cache.incr(key, step)
+                self.writeline(result)
 
-                case ["add", *args]:
-                    key, entry = self.readentry(args)
-                    result = self.cache.add(key, entry)
-                    self.writeline(result)
+            case ["decr", key, step]:
+                step = int(step)
+                result = self.cache.decr(key, step)
+                self.writeline(result)
 
-                case ["replace", *args]:
-                    key, entry = self.readentry(args)
-                    result = self.cache.replace(key, entry)
-                    self.writeline(result)
+            case ["add", key, flags, exptime, length]:
+                key, entry = self.readentry(key, flags, exptime, length)
+                result = self.cache.add(key, entry)
+                self.writeline(result)
 
-                case ["prepend", *args]:
-                    key, entry = self.readentry(args)
-                    result = self.cache.prepend(key, entry)
-                    self.writeline(result)
+            case ["replace", key, flags, exptime, length]:
+                key, entry = self.readentry(key, flags, exptime, length)
+                result = self.cache.replace(key, entry)
+                self.writeline(result)
 
-                case ["append", *args]:
-                    key, entry = self.readentry(args)
-                    result = self.cache.append(key, entry)
-                    self.writeline(result)
+            case ["prepend", key, flags, exptime, length]:
+                key, entry = self.readentry(key, flags, exptime, length)
+                result = self.cache.prepend(key, entry)
+                self.writeline(result)
 
-                case _:
-                    self.writeline(ERROR)
+            case ["append", key, flags, exptime, length]:
+                key, entry = self.readentry(key, flags, exptime, length)
+                result = self.cache.append(key, entry)
+                self.writeline(result)
+
+            case _:
+                self.writeline(ERROR)
 
 
-class Server:
+class Server(threading.Thread):
     def __init__(self, host, port):
+        super().__init__()
+        self.cache = Cache()
         self.addr = (host, port)
-    
+
     def run(self):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as base:
             base.bind(self.addr)
@@ -288,14 +322,12 @@ class Server:
                 input = conn.makefile("rb")
                 output = conn.makefile("wb")
 
-                print("connected: " + str(addr))
-                client = Connection(input, output)
-                client.run()
-                print("disconnected")
+                client = Connection(addr, input, output, self.cache)
+                client.start()
+
 
 # conn = Connection(sys.stdin.buffer, sys.stdout.buffer)
 # conn.run()
 
 server = Server("127.0.0.1", 8081)
 server.run()
-
