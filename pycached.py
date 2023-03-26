@@ -188,6 +188,12 @@ class Connection:
         self.output.write(EOL)
         self.output.flush()
     
+    def readentry(self, args):
+        key, flags, exptime, length = args
+        data = self.readdata(int(length))
+        entry = Entry(key, int(flags), int(exptime), data)
+        return key, entry
+    
     def run(self):
         while True:
             line = self.readline()
@@ -208,7 +214,6 @@ class Connection:
                         self.writedata(entry.data)
                     self.writeline(END)
                 
-
                 case ["gat", exptime, *keys]:
                     exptime = int(exptime)
 
@@ -225,15 +230,9 @@ class Connection:
                         self.writedata(entry.data)
                     self.writeline(END)
 
-                case ["set", key, flags, exptime, length]:
-                    flags = int(flags)
-                    exptime = int(exptime)
-                    length = int(length)
-                    data = self.readdata(length)
-
-                    entry = Entry(key, flags, exptime, data)
+                case ["set", *args]:
+                    key, entry = self.readentry(args)
                     result = self.cache.set(key, entry)
-
                     self.writeline(result)
 
                 case ["delete", key]:
@@ -250,26 +249,24 @@ class Connection:
                     result = self.cache.decr(key, step)
                     self.writedata(result)
 
-                case ["add", key, flags, exptime, length]:
-                    flags = int(flags)
-                    exptime = int(exptime)
-                    length = int(length)
-                    data = self.readdata(length)
-
-                    entry = Entry(key, flags, exptime, data)
+                case ["add", *args]:
+                    key, entry = self.readentry(args)
                     result = self.cache.add(key, entry)
-
                     self.writeline(result)
 
-                case ["replace", key, flags, exptime, length]:
-                    flags = int(flags)
-                    exptime = int(exptime)
-                    length = int(length)
-                    data = self.readdata(length)
-
-                    entry = Entry(key, flags, exptime, data)
+                case ["replace", *args]:
+                    key, entry = self.readentry(args)
                     result = self.cache.replace(key, entry)
+                    self.writeline(result)
 
+                case ["prepend", *args]:
+                    key, entry = self.readentry(args)
+                    result = self.cache.prepend(key, entry)
+                    self.writeline(result)
+
+                case ["append", *args]:
+                    key, entry = self.readentry(args)
+                    result = self.cache.append(key, entry)
                     self.writeline(result)
 
                 case _:

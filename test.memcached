@@ -1,0 +1,12 @@
+set n 13 27 1
+0
+incr n 2
+decr n 1
+get n
+append n 0 0 1
+1
+incr n 1
+get n
+replace n 14 28 1
+X
+get n
