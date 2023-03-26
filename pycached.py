@@ -1,5 +1,6 @@
 import sys
 import re
+import socket
 
 CHARSET = "ascii"
 
@@ -273,5 +274,28 @@ class Connection:
                     self.writeline(ERROR)
 
 
-conn = Connection(sys.stdin.buffer, sys.stdout.buffer)
-conn.run()
+class Server:
+    def __init__(self, host, port):
+        self.addr = (host, port)
+    
+    def run(self):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as base:
+            base.bind(self.addr)
+            base.listen()
+
+            while True:
+                conn, addr = base.accept()
+                input = conn.makefile("rb")
+                output = conn.makefile("wb")
+
+                print("connected: " + str(addr))
+                client = Connection(input, output)
+                client.run()
+                print("disconnected")
+
+# conn = Connection(sys.stdin.buffer, sys.stdout.buffer)
+# conn.run()
+
+server = Server("127.0.0.1", 8081)
+server.run()
+
