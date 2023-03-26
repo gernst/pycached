@@ -1,6 +1,8 @@
 import sys
 import re
 
+CHARSET = "ascii"
+
 ERROR = "ERROR"
 STORED = "STORED"
 DELETED = "DELETED"
@@ -44,7 +46,7 @@ class Entry:
 
     def value(self):
         try:
-            return int(data)
+            return int(self.data)
         except ValueError:
             raise ClientError("cannot increment or decrement non-numeric value")
 
@@ -53,14 +55,16 @@ class Entry:
         value = self.value() + step
         if value >= MAX_VALUE:
             value -= MAX_VALUE
-        self.data = str(value)
+        value = str(value)
+        self.data = value.encode(CHARSET)
 
     def decr(self, step):
         assert 0 <= step and step < MAX_VALUE
-        value = self.value() + step
+        value = self.value() - step
         if value < 0:
             value = 0
-        self.data = str(value)
+        value = str(value)
+        self.data = value.encode(CHARSET)
 
     def touched(self, exptime):
         self.exptime = exptime
@@ -91,7 +95,7 @@ class Cache:
 
     def delete(self, key):
         if key in self.entries:
-            self.entries.remove(key)
+            del(self.entries[key])
             return DELETED
         else:
             return NOT_FOUND
@@ -150,7 +154,7 @@ class Cache:
             return NOT_STORED
 
 
-class Server:
+class Connection:
     def __init__(self, input, output):
         self.input = input
         self.output = output
@@ -158,9 +162,13 @@ class Server:
     
     def readline(self):
         line = self.input.readline()
-        line = line.decode("ascii")
-        line = line.strip()
-        return line
+
+        if not line:
+            return None
+        else:
+            line = line.decode(CHARSET)
+            line = line.strip()
+            return line
 
     def readdata(self, length):
         data = self.input.read(length)
@@ -170,7 +178,7 @@ class Server:
     def writeline(self, *parts):
         parts = [str(part) for part in parts]
         line = " ".join(parts)
-        line = line.encode("ascii")
+        line = line.encode(CHARSET)
         self.output.write(line)
         self.output.write(EOL)
         self.output.flush()
@@ -183,6 +191,9 @@ class Server:
     def run(self):
         while True:
             line = self.readline()
+
+            if line is None:
+                break
 
             match line.split():
                 case ["get", *keys]:
@@ -225,9 +236,45 @@ class Server:
 
                     self.writeline(result)
 
+                case ["delete", key]:
+                    result = self.cache.delete(key)
+                    self.writeline(result)
+
+                case ["incr", key, step]:
+                    step = int(step)
+                    result = self.cache.incr(key, step)
+                    self.writedata(result)
+
+                case ["decr", key, step]:
+                    step = int(step)
+                    result = self.cache.decr(key, step)
+                    self.writedata(result)
+
+                case ["add", key, flags, exptime, length]:
+                    flags = int(flags)
+                    exptime = int(exptime)
+                    length = int(length)
+                    data = self.readdata(length)
+
+                    entry = Entry(key, flags, exptime, data)
+                    result = self.cache.add(key, entry)
+
+                    self.writeline(result)
+
+                case ["replace", key, flags, exptime, length]:
+                    flags = int(flags)
+                    exptime = int(exptime)
+                    length = int(length)
+                    data = self.readdata(length)
+
+                    entry = Entry(key, flags, exptime, data)
+                    result = self.cache.replace(key, entry)
+
+                    self.writeline(result)
+
                 case _:
                     self.writeline(ERROR)
 
 
-server = Server(sys.stdin.buffer, sys.stdout.buffer)
-server.run()
+conn = Connection(sys.stdin.buffer, sys.stdout.buffer)
+conn.run()
