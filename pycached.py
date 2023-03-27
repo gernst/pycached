@@ -17,8 +17,10 @@ GET = "GET"
 VALUE = "VALUE"
 END = "END"
 
+SERVER_ERROR = "SERVER_ERROR"
 CLIENT_ERROR = "CLIENT_ERROR"
 
+MAX_REL_TIME = 60 * 60 * 24 * 30  # 30 days
 MAX_VALUE = 2**64
 
 EOL = b"\n"
@@ -27,6 +29,24 @@ EOL = b"\n"
 class ClientError(Exception):
     def __init__(self, message):
         self.message = message
+
+
+def number(arg):
+    try:
+        return int(arg)
+    except ValueError:
+        raise ClientError("not a number")
+
+
+def reltime(arg, now):
+    arg = number(arg)
+    if arg <= MAX_REL_TIME:
+        arg += now
+    return arg
+
+
+class Environment:
+    current_time = 0
 
 
 class Entry:
@@ -44,17 +64,11 @@ class Entry:
         self.unique = Entry.next_unique()
 
     def __str__(self):
-        return f"Entry({self.key}, {self.flags}, {self.exptime}, {len(self.data)})"
-
-    def value(self):
-        try:
-            return int(self.data)
-        except ValueError:
-            raise ClientError("cannot increment or decrement non-numeric value")
+        return f"Entry({self.key}, {self.flags}, {self.exptime}, #{len(self.data)})"
 
     def incr(self, step):
         assert 0 <= step and step < MAX_VALUE
-        value = self.value() + step
+        value = number(self.data) + step
         if value >= MAX_VALUE:
             value -= MAX_VALUE
         value = str(value)
@@ -64,7 +78,7 @@ class Entry:
 
     def decr(self, step):
         assert 0 <= step and step < MAX_VALUE
-        value = self.value() - step
+        value = number(self.data) - step
         if value < 0:
             value = 0
         value = str(value)
@@ -72,9 +86,8 @@ class Entry:
         self.data = value.encode(CHARSET)
         return value
 
-    def touched(self, exptime):
+    def touch(self, exptime):
         self.exptime = exptime
-        return self  # used in Cache.gat
 
     def prepend(self, entry):
         self.data = entry.data + self.data
@@ -86,43 +99,69 @@ class Entry:
 class Cache:
     def __init__(self):
         self.entries = {}
+        self.lock = threading.Lock()
+
+    # find a cache entry and check whether it is still active
+    def find(self, key):
+        if key in self.entries:
+            entry = self.entries[key]
+            if Environment.current_time < entry.exptime:
+                return entry
+            else:
+                return None
+        else:
+            return None
+
+    # internal operation that evicts all expired entries
+    def evict_expired(self):
+        keys = [key for key in self.entries if self.find(key)]
+
+        for key in keys:
+            del self.entries[key]
 
     def get(self, keys):
-        return [self.entries[key] for key in keys if key in self.entries]
+        for key in keys:
+            entry = self.find(key)
+            if entry:
+                yield entry
 
     def gat(self, keys, exptime):
-        return [
-            self.entries[key].touched(exptime) for key in keys if key in self.entries
-        ]
+        for key in keys:
+            entry = self.find(key)
+            if entry:
+                entry.touch(exptime)
+                yield entry
 
     def set(self, key, entry):
         self.entries[key] = entry
         return STORED
 
     def delete(self, key):
-        if key in self.entries:
+        entry = self.find(key)
+        if entry:
             del self.entries[key]
             return DELETED
         else:
             return NOT_FOUND
 
     def touch(self, key, exptime):
-        if key in self.entries:
-            self.entries.touched(exptime)
+        entry = self.find(key)
+        if entry:
+            entry.touch(exptime)
             return TOUCHED
         else:
             return NOT_FOUND
 
     def incr(self, key, step):
-        if key in self.entries:
-            entry = self.entries[key]
+        entry = self.find(key)
+        if entry:
             return entry.incr(step)
         else:
             return NOT_FOUND
 
     def decr(self, key, step):
-        if key in self.entries:
-            entry = self.entries[key]
+        entry = self.find(key)
+        if entry:
             return entry.decr(step)
         else:
             return NOT_FOUND
@@ -142,8 +181,9 @@ class Cache:
             return NOT_STORED
 
     def cas(self, key, entry, unique):
-        if key in self.entries:
-            if self.entries[key].unique == unique:
+        entry = self.find(key)
+        if entry:
+            if entry.unique == unique:
                 self.entries[key] = entry
                 return STORED
             else:
@@ -154,15 +194,17 @@ class Cache:
     # while prepend and append ignore flags and exptime
     # the command grammar nevertheless includes dummy values for these
     def prepend(self, key, entry):
-        if key in self.entries:
-            self.entries[key].prepend(entry)
+        entry = self.find(key)
+        if entry:
+            entry.prepend(entry)
             return STORED
         else:
             return NOT_STORED
 
     def append(self, key, entry):
-        if key in self.entries:
-            self.entries[key].append(entry)
+        entry = self.find(key)
+        if entry:
+            entry.append(entry)
             return STORED
         else:
             return NOT_STORED
@@ -207,8 +249,8 @@ class Connection(threading.Thread):
         self.output.flush()
 
     def readentry(self, key, flags, exptime, length):
-        data = self.readdata(int(length))
-        entry = Entry(key, int(flags), int(exptime), data)
+        data = self.readdata(number(length))
+        entry = Entry(key, number(flags), number(exptime), data)
         return key, entry
 
     def writeentry(self, entry, cas):
@@ -230,10 +272,13 @@ class Connection(threading.Thread):
                 break
 
             try:
-                self.handle(line)
+                with self.cache.lock:
+                    self.handle(line)
             except ClientError as e:
                 self.writeline(CLIENT_ERROR, e.message)
-        
+            # except Exception as e:
+            #     self.writeline(SERVER_ERROR, "internal error")
+
         print("disconnected", self.addr)
 
     def handle(self, line):
@@ -249,12 +294,12 @@ class Connection(threading.Thread):
                 self.writeline(END)
 
             case ["gat", exptime, *keys]:
-                for entry in self.cache.gat(keys, int(exptime)):
+                for entry in self.cache.gat(keys, number(exptime)):
                     self.writeentry(entry, cas=False)
                 self.writeline(END)
 
             case ["gats", exptime, *keys]:
-                for entry in self.cache.gat(keys, int(exptime)):
+                for entry in self.cache.gat(keys, number(exptime)):
                     self.writeentry(entry, cas=True)
                 self.writeline(END)
 
@@ -265,7 +310,7 @@ class Connection(threading.Thread):
 
             case ["cas", key, flags, exptime, length, unique]:
                 key, entry = self.readentry(key, flags, exptime, length)
-                result = self.cache.cas(key, entry, int(unique))
+                result = self.cache.cas(key, entry, number(unique))
                 self.writeline(result)
 
             case ["delete", key]:
@@ -273,12 +318,12 @@ class Connection(threading.Thread):
                 self.writeline(result)
 
             case ["incr", key, step]:
-                step = int(step)
+                step = number(step)
                 result = self.cache.incr(key, step)
                 self.writeline(result)
 
             case ["decr", key, step]:
-                step = int(step)
+                step = number(step)
                 result = self.cache.decr(key, step)
                 self.writeline(result)
 
@@ -317,16 +362,25 @@ class Server(threading.Thread):
             base.bind(self.addr)
             base.listen()
 
+            print("listening", self.addr)
+
             while True:
-                conn, addr = base.accept()
-                input = conn.makefile("rb")
-                output = conn.makefile("wb")
+                try:
+                    conn, addr = base.accept()
+                    input = conn.makefile("rb")
+                    output = conn.makefile("wb")
 
-                client = Connection(addr, input, output, self.cache)
-                client.start()
+                    client = Connection(addr, input, output, self.cache)
+                    client.start()
+
+                except KeyboardInterrupt:
+                    print("terminated")
+                    break
 
 
-# conn = Connection(sys.stdin.buffer, sys.stdout.buffer)
+# addr = None
+# cache = Cache()
+# conn = Connection(addr, sys.stdin.buffer, sys.stdout.buffer, cache)
 # conn.run()
 
 server = Server("127.0.0.1", 8081)
