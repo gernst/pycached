@@ -8,9 +8,11 @@ from pycached.cache import Cache
 from pycached.connection import Connection
 from pycached.protocol import Protocol
 
+
 class LocalClock(Clock):
     def current_unixtime(self):
         return int(time.time())
+
 
 def run_local():
     addr = None
@@ -21,6 +23,7 @@ def run_local():
 
     print("serving (local)")
     proto.serve()
+
 
 def run_server(host, port):
     addr = (host, port)
@@ -42,13 +45,12 @@ def run_server(host, port):
                 conn = Connection(addr, input, output)
                 proto = Protocol(conn, clock, cache)
 
-
                 def run():
                     print("serving", addr)
                     proto.serve()
                     print("disconnected", addr)
 
-                thread = threading.Thread(target = run)
+                thread = threading.Thread(target=run)
                 thread.start()
 
             except KeyboardInterrupt:

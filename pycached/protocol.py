@@ -1,5 +1,4 @@
-from .shared import to_number, ClientError
-
+from pycached.shared import to_number, ClientError
 from pycached.entry import Entry
 
 MAX_REL_TIME = 60 * 60 * 24 * 30  # 30 days
@@ -68,9 +67,8 @@ class Protocol:
                 break
 
             try:
-                with self.cache.lock:
-                    now = self.clock.current_unixtime()
-                    self.handle(now, cmd)
+                now = self.clock.current_unixtime()
+                self.handle(now, cmd)
             except ClientError as e:
                 self.write_client_error(e.message)
             # except Exception as e:

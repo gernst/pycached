@@ -1,8 +1,9 @@
-from .shared import str_to_bytes, bytes_to_str
+from pycached.shared import str_to_bytes, bytes_to_str
 
 EOL = b"\n"
 
-class Connection():
+
+class Connection:
     def __init__(self, addr, input, output):
         self.addr = addr
         self.input = input

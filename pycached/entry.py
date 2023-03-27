@@ -2,6 +2,7 @@ from pycached.shared import to_number, number_to_str_and_bytes
 
 MAX_VALUE = 2**64
 
+
 class Entry:
     unique = 0
 
@@ -24,7 +25,7 @@ class Entry:
         self.exptime = exptime
 
     # NOTE: do not modify entries descrtructively without bumping the version
-        
+
     def prepend(self, entry):
         self.data = entry.data + self.data
 
