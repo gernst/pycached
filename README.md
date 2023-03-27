@@ -4,13 +4,18 @@
 
 ## Quickstart
 
-In one terminal run the server
+Single-threaded via stdin/stdout:
 
     python pycached.py
 
-In a second terminal, run some tests:
+Alternatively, in one terminal run the server in network mode,
+by specifying a hostname and a port such as:
 
-    nc localhost 8081 < test.memcached
+    python pycached.py localhost 1234
+
+In other terminals, connect to the server and perhaps run some tests:
+
+    nc localhost 1234 < test.memcached
 
 ## Status
 

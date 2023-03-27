@@ -68,6 +68,8 @@ def run_server(host, port):
                 print("terminated")
                 break
 
-
-run_local()
-# run_server("localhost", 1234)
+match sys.argv:
+    case [bin]:
+        run_local()
+    case [bin, host, port]:
+        run_server(host, int(port))
