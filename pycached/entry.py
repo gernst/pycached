@@ -28,9 +28,11 @@ class Entry:
 
     def prepend(self, entry):
         self.data = entry.data + self.data
+        self.unique = Entry.next_unique()
 
     def append(self, entry):
         self.data = self.data + entry.data
+        self.unique = Entry.next_unique()
 
     def incr(self, step):
         assert 0 <= step and step < MAX_VALUE
@@ -39,6 +41,7 @@ class Entry:
             value -= MAX_VALUE
         value, data = number_to_str_and_bytes(value)
         self.data = data
+        self.unique = Entry.next_unique()
         return value
 
     def decr(self, step):
@@ -48,4 +51,5 @@ class Entry:
             value = 0
         value, data = number_to_str_and_bytes(value)
         self.data = data
+        self.unique = Entry.next_unique()
         return value
