@@ -2,6 +2,8 @@
 
 `pycached` is a Python model of the memcache server created for https://verifythis.github.io/
 
+**WARNING**: the code as it is contains a known bugs related to how entries are managed in `entry.py`.
+
 ## Quickstart
 
 Single-threaded via stdin/stdout:
